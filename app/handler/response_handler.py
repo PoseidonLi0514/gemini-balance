@@ -39,7 +39,7 @@ class GeminiResponseHandler(ResponseHandler):
 def _handle_openai_stream_response(
     response: Dict[str, Any], model: str, finish_reason: str, usage_metadata: Optional[Dict[str, Any]]
 ) -> Dict[str, Any]:
-    text, tool_calls = _extract_result(
+    text, tool_calls, _ = _extract_result(
         response, model, stream=True, gemini_format=False
     )
     if not text and not tool_calls:
@@ -63,10 +63,10 @@ def _handle_openai_stream_response(
 def _handle_openai_normal_response(
     response: Dict[str, Any], model: str, finish_reason: str, usage_metadata: Optional[Dict[str, Any]]
 ) -> Dict[str, Any]:
-    text, tool_calls = _extract_result(
+    text, tool_calls, thought = _extract_result(
         response, model, stream=False, gemini_format=False
     )
-    return {
+    response_data = {
         "id": f"chatcmpl-{uuid.uuid4()}",
         "object": "chat.completion",
         "created": int(time.time()),
@@ -84,6 +84,9 @@ def _handle_openai_normal_response(
         ],
         "usage": {"prompt_tokens": usage_metadata.get("promptTokenCount", 0), "completion_tokens": usage_metadata.get("candidatesTokenCount",0), "total_tokens": usage_metadata.get("totalTokenCount", 0)},
     }
+    if thought:
+        response_data["thought"] = thought
+    return response_data
 
 
 class OpenAIResponseHandler(ResponseHandler):
@@ -156,66 +159,68 @@ def _extract_result(
     model: str,
     stream: bool = False,
     gemini_format: bool = False,
-) -> tuple[str, List[Dict[str, Any]]]:
-    text, tool_calls = "", []
+) -> tuple[str, List[Dict[str, Any]], Optional[str]]:
+    """Extract text, tool calls and thought from Gemini response."""
+    text, tool_calls, thought = "", [], None
     if stream:
         if response.get("candidates"):
             candidate = response["candidates"][0]
             content = candidate.get("content", {})
             parts = content.get("parts", [])
             if not parts:
-                return "", []
-            if "text" in parts[0]:
-                text = parts[0].get("text")
-            elif "executableCode" in parts[0]:
-                text = _format_code_block(parts[0]["executableCode"])
-            elif "codeExecution" in parts[0]:
-                text = _format_code_block(parts[0]["codeExecution"])
-            elif "executableCodeResult" in parts[0]:
-                text = _format_execution_result(parts[0]["executableCodeResult"])
-            elif "codeExecutionResult" in parts[0]:
-                text = _format_execution_result(parts[0]["codeExecutionResult"])
-            elif "inlineData" in parts[0]:
-                text = _extract_image_data(parts[0])
+                return "", [], None
+            start_index = 0
+            if parts[0].get("thought") or ("thinking" in model and len(parts) >= 2):
+                if settings.SHOW_THINKING_PROCESS:
+                    thought = parts[0].get("text", "")
+                start_index = 1
+            current_part = parts[start_index] if len(parts) > start_index else {}
+            if "text" in current_part:
+                text = current_part.get("text")
+            elif "executableCode" in current_part:
+                text = _format_code_block(current_part["executableCode"])
+            elif "codeExecution" in current_part:
+                text = _format_code_block(current_part["codeExecution"])
+            elif "executableCodeResult" in current_part:
+                text = _format_execution_result(current_part["executableCodeResult"])
+            elif "codeExecutionResult" in current_part:
+                text = _format_execution_result(current_part["codeExecutionResult"])
+            elif "inlineData" in current_part:
+                text = _extract_image_data(current_part)
             else:
                 text = ""
             text = _add_search_link_text(model, candidate, text)
-            tool_calls = _extract_tool_calls(parts, gemini_format)
+            tool_calls = _extract_tool_calls(parts[start_index:], gemini_format)
     else:
         if response.get("candidates"):
             candidate = response["candidates"][0]
-            if "thinking" in model:
+            parts = candidate.get("content", {}).get("parts", [])
+            start_index = 0
+            if parts and (parts[0].get("thought") or ("thinking" in model and len(parts) >= 2)):
                 if settings.SHOW_THINKING_PROCESS:
-                    if len(candidate["content"]["parts"]) == 2:
-                        text = (
-                            "> thinking\n\n"
-                            + candidate["content"]["parts"][0]["text"]
-                            + "\n\n---\n> output\n\n"
-                            + candidate["content"]["parts"][1]["text"]
-                        )
-                    else:
-                        text = candidate["content"]["parts"][0]["text"]
-                else:
-                    if len(candidate["content"]["parts"]) == 2:
-                        text = candidate["content"]["parts"][1]["text"]
-                    else:
-                        text = candidate["content"]["parts"][0]["text"]
-            else:
-                text = ""
-                if "parts" in candidate["content"]:
-                    for part in candidate["content"]["parts"]:
-                        if "text" in part:
-                            text += part["text"]
-                        elif "inlineData" in part:
-                            text += _extract_image_data(part)
+                    thought = parts[0].get("text", "")
+                start_index = 1
+
+            text = ""
+            for part in parts[start_index:]:
+                if "text" in part:
+                    text += part.get("text", "")
+                elif "inlineData" in part:
+                    text += _extract_image_data(part)
+                elif "executableCode" in part:
+                    text += _format_code_block(part["executableCode"])
+                elif "codeExecution" in part:
+                    text += _format_code_block(part["codeExecution"])
+                elif "executableCodeResult" in part:
+                    text += _format_execution_result(part["executableCodeResult"])
+                elif "codeExecutionResult" in part:
+                    text += _format_execution_result(part["codeExecutionResult"])
 
             text = _add_search_link_text(model, candidate, text)
-            tool_calls = _extract_tool_calls(
-                candidate["content"]["parts"], gemini_format
-            )
+            tool_calls = _extract_tool_calls(parts[start_index:], gemini_format)
         else:
             text = "暂无返回"
-    return text, tool_calls
+    return text, tool_calls, thought
 
 
 def _extract_image_data(part: dict) -> str:
@@ -288,7 +293,7 @@ def _extract_tool_calls(
 def _handle_gemini_stream_response(
     response: Dict[str, Any], model: str, stream: bool
 ) -> Dict[str, Any]:
-    text, tool_calls = _extract_result(
+    text, tool_calls, _ = _extract_result(
         response, model, stream=stream, gemini_format=True
     )
     if tool_calls:
@@ -302,11 +307,13 @@ def _handle_gemini_stream_response(
 def _handle_gemini_normal_response(
     response: Dict[str, Any], model: str, stream: bool
 ) -> Dict[str, Any]:
-    text, tool_calls = _extract_result(
+    text, tool_calls, thought = _extract_result(
         response, model, stream=stream, gemini_format=True
     )
     if tool_calls:
         content = {"parts": tool_calls, "role": "model"}
+    elif thought is not None:
+        content = {"parts": [{"text": thought, "thought": True}, {"text": text}], "role": "model"}
     else:
         content = {"parts": [{"text": text}], "role": "model"}
     response["candidates"][0]["content"] = content
