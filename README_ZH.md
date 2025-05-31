@@ -175,7 +175,7 @@ app/
 | `FILTERED_MODELS`            | 可选，被禁用的模型列表                                         | `["gemini-1.0-pro-vision-latest", ...]`               |
 | `TOOLS_CODE_EXECUTION_ENABLED` | 可选，是否启用代码执行工具                                     | `false`                                               |
 | `SHOW_SEARCH_LINK`           | 可选，是否在响应中显示搜索结果链接                             | `true`                                                |
-| `SHOW_THINKING_PROCESS`      | 可选，是否显示模型思考过程                                     | `true`                                                |
+| `SHOW_THINKING_PROCESS`      | 已废弃，响应现在会原样返回模型的思考内容 | `true`                                                |
 | `THINKING_MODELS`            | 可选，支持思考功能的模型列表                                   | `[]`                                                  |
 | `THINKING_BUDGET_MAP`        | 可选，思考功能预算映射 (模型名:预算值)                         | `{}`                                                  |
 | `BASE_URL`                   | 可选，Gemini API 基础 URL，默认无需修改                        | `https://generativelanguage.googleapis.com/v1beta`    |
