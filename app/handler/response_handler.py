@@ -32,8 +32,8 @@ class GeminiResponseHandler(ResponseHandler):
         self, response: Dict[str, Any], model: str, stream: bool = False, usage_metadata: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         if stream:
-            return _handle_gemini_stream_response(response, model, stream)
-        return _handle_gemini_normal_response(response, model, stream)
+            return _handle_gemini_stream_response(response, model)
+        return _handle_gemini_normal_response(response, model)
 
 
 def _handle_openai_stream_response(
@@ -184,30 +184,13 @@ def _extract_result(
     else:
         if response.get("candidates"):
             candidate = response["candidates"][0]
-            if "thinking" in model:
-                if settings.SHOW_THINKING_PROCESS:
-                    if len(candidate["content"]["parts"]) == 2:
-                        text = (
-                            "> thinking\n\n"
-                            + candidate["content"]["parts"][0]["text"]
-                            + "\n\n---\n> output\n\n"
-                            + candidate["content"]["parts"][1]["text"]
-                        )
-                    else:
-                        text = candidate["content"]["parts"][0]["text"]
-                else:
-                    if len(candidate["content"]["parts"]) == 2:
-                        text = candidate["content"]["parts"][1]["text"]
-                    else:
-                        text = candidate["content"]["parts"][0]["text"]
-            else:
-                text = ""
-                if "parts" in candidate["content"]:
-                    for part in candidate["content"]["parts"]:
-                        if "text" in part:
-                            text += part["text"]
-                        elif "inlineData" in part:
-                            text += _extract_image_data(part)
+            text = ""
+            if "parts" in candidate.get("content", {}):
+                for part in candidate["content"]["parts"]:
+                    if "text" in part:
+                        text += part["text"]
+                    elif "inlineData" in part:
+                        text += _extract_image_data(part)
 
             text = _add_search_link_text(model, candidate, text)
             tool_calls = _extract_tool_calls(
@@ -285,31 +268,70 @@ def _extract_tool_calls(
     return tool_calls
 
 
+def _process_gemini_part(part: Dict[str, Any]) -> Dict[str, Any]:
+    """对单个 Gemini 响应 part 进行处理，保持结构不变"""
+    if not part:
+        return {}
+    if "text" in part:
+        return {"text": part["text"]}
+    if "executableCode" in part:
+        return {"text": _format_code_block(part["executableCode"])}
+    if "codeExecution" in part:
+        return {"text": _format_code_block(part["codeExecution"])}
+    if "executableCodeResult" in part:
+        return {"text": _format_execution_result(part["executableCodeResult"])}
+    if "codeExecutionResult" in part:
+        return {"text": _format_execution_result(part["codeExecutionResult"])}
+    if "inlineData" in part:
+        return {"text": _extract_image_data(part)}
+    return part
+
+
+def _build_search_link_part(model: str, candidate: dict) -> Optional[Dict[str, str]]:
+    """构建引用来源 part"""
+    if (
+        settings.SHOW_SEARCH_LINK
+        and model.endswith("-search")
+        and "groundingMetadata" in candidate
+        and "groundingChunks" in candidate["groundingMetadata"]
+    ):
+        grounding_chunks = candidate["groundingMetadata"]["groundingChunks"]
+        text = "\n\n---\n\n" + "**【引用来源】**\n\n"
+        for chunk in grounding_chunks:
+            if "web" in chunk:
+                text += _create_search_link(chunk["web"])
+        return {"text": text}
+    return None
+
 def _handle_gemini_stream_response(
-    response: Dict[str, Any], model: str, stream: bool
+    response: Dict[str, Any], model: str
 ) -> Dict[str, Any]:
-    text, tool_calls = _extract_result(
-        response, model, stream=stream, gemini_format=True
-    )
-    if tool_calls:
-        content = {"parts": tool_calls, "role": "model"}
-    else:
-        content = {"parts": [{"text": text}], "role": "model"}
-    response["candidates"][0]["content"] = content
+    if not response.get("candidates"):
+        return response
+    candidate = response["candidates"][0]
+    parts = candidate.get("content", {}).get("parts", [])
+    processed_parts = [_process_gemini_part(p) for p in parts]
+    link_part = _build_search_link_part(model, candidate)
+    if link_part:
+        processed_parts.append(link_part)
+    candidate["content"]["parts"] = processed_parts
+    response["candidates"][0] = candidate
     return response
 
 
 def _handle_gemini_normal_response(
-    response: Dict[str, Any], model: str, stream: bool
+    response: Dict[str, Any], model: str
 ) -> Dict[str, Any]:
-    text, tool_calls = _extract_result(
-        response, model, stream=stream, gemini_format=True
-    )
-    if tool_calls:
-        content = {"parts": tool_calls, "role": "model"}
-    else:
-        content = {"parts": [{"text": text}], "role": "model"}
-    response["candidates"][0]["content"] = content
+    if not response.get("candidates"):
+        return response
+    candidate = response["candidates"][0]
+    parts = candidate.get("content", {}).get("parts", [])
+    processed_parts = [_process_gemini_part(p) for p in parts]
+    link_part = _build_search_link_part(model, candidate)
+    if link_part:
+        processed_parts.append(link_part)
+    candidate["content"]["parts"] = processed_parts
+    response["candidates"][0] = candidate
     return response
 
 
