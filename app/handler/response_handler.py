@@ -31,9 +31,8 @@ class GeminiResponseHandler(ResponseHandler):
     def handle_response(
         self, response: Dict[str, Any], model: str, stream: bool = False, usage_metadata: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
-        if stream:
-            return _handle_gemini_stream_response(response, model, stream)
-        return _handle_gemini_normal_response(response, model, stream)
+        # Gemini接口返回的思考内容和回复部分会保持原样透传
+        return response
 
 
 def _handle_openai_stream_response(
@@ -184,30 +183,13 @@ def _extract_result(
     else:
         if response.get("candidates"):
             candidate = response["candidates"][0]
-            if "thinking" in model:
-                if settings.SHOW_THINKING_PROCESS:
-                    if len(candidate["content"]["parts"]) == 2:
-                        text = (
-                            "> thinking\n\n"
-                            + candidate["content"]["parts"][0]["text"]
-                            + "\n\n---\n> output\n\n"
-                            + candidate["content"]["parts"][1]["text"]
-                        )
-                    else:
-                        text = candidate["content"]["parts"][0]["text"]
-                else:
-                    if len(candidate["content"]["parts"]) == 2:
-                        text = candidate["content"]["parts"][1]["text"]
-                    else:
-                        text = candidate["content"]["parts"][0]["text"]
-            else:
-                text = ""
-                if "parts" in candidate["content"]:
-                    for part in candidate["content"]["parts"]:
-                        if "text" in part:
-                            text += part["text"]
-                        elif "inlineData" in part:
-                            text += _extract_image_data(part)
+            text = ""
+            if "parts" in candidate.get("content", {}):
+                for part in candidate["content"]["parts"]:
+                    if "text" in part:
+                        text += part["text"]
+                    elif "inlineData" in part:
+                        text += _extract_image_data(part)
 
             text = _add_search_link_text(model, candidate, text)
             tool_calls = _extract_tool_calls(
